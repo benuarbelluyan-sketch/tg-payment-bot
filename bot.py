@@ -102,7 +102,7 @@ def get_user(uid: int) -> dict:
         USER[uid] = {
             "lang": "ru",
             "flow": None,          # sub / topup / status
-            "step": None,          # wait_topup_email / wait_txid / wait_sbp_receipt / choose_coin
+            "step": None,          # wait_topup_email / wait_txid / wait_sbp_receipt / wait_status_creds / choose_coin
             "sub_months": None,
             "topup_usd": None,
             "pay_method": None,    # sbp / crypto
@@ -160,11 +160,13 @@ def kb_main(lang: str):
     if lang == "ru":
         kb.button(text="💳 Купить подписку", callback_data="menu:buy_sub")
         kb.button(text="💰 Пополнить баланс", callback_data="menu:topup")
+        kb.button(text="📊 Мой статус", callback_data="menu:status")
         kb.button(text="🆘 Поддержка", callback_data="menu:support")
         kb.button(text="🏠 В начало", callback_data="nav:home")
     else:
         kb.button(text="💳 Buy subscription", callback_data="menu:buy_sub")
         kb.button(text="💰 Top up balance", callback_data="menu:topup")
+        kb.button(text="📊 My status", callback_data="menu:status")
         kb.button(text="🆘 Support", callback_data="menu:support")
         kb.button(text="🏠 Home", callback_data="nav:home")
     kb.adjust(1)
@@ -363,6 +365,20 @@ async def menu_handler(cb: CallbackQuery):
         await cb.answer()
         return
 
+    if action == "status":
+        reset_flow(u)
+        u["flow"] = "status"
+        u["step"] = "wait_status_creds"
+        txt = (
+            "Отправьте email и лицензионный ключ одним сообщением в формате:\nemail | ключ\n\nПример:\n"
+            "test@mail.com | ABCD-1234"
+            if lang == "ru" else
+            "Send email and license key in one message:\nemail | key\n\nExample:\n"
+            "test@mail.com | ABCD-1234"
+        )
+        await safe_edit(cb, txt, reply_markup=kb_cancel_payment(lang))
+        await cb.answer()
+        return
 
 
 # =====================
@@ -623,6 +639,33 @@ async def message_handler(message: Message):
     u = get_user(message.from_user.id)
     lang = u["lang"]
 
+    # status: email | key
+    if u.get("step") == "wait_status_creds":
+        text = (message.text or "").strip()
+        if "|" not in text:
+            await message.answer("Формат: email | ключ" if lang == "ru" else "Format: email | key",
+                                 reply_markup=kb_cancel_payment(lang))
+            return
+        email, key = [x.strip() for x in text.split("|", 1)]
+        if "@" not in email or len(key) < 4:
+            await message.answer("Проверьте email и ключ." if lang == "ru" else "Please check email and key.",
+                                 reply_markup=kb_cancel_payment(lang))
+            return
+
+        if ADMIN_ID:
+            await bot.send_message(
+                ADMIN_ID,
+                "🔵 STATUS REQUEST\n"
+                f"Time: {now_str()}\n"
+                f"User: {format_user(message)}\n"
+                f"Email: {email}\n"
+                f"Key: {key}\n"
+            )
+
+        u["step"] = None
+        await message.answer("✅ Принято. В будущем здесь будет подтягиваться баланс/лицензия.",
+                             reply_markup=kb_main(lang))
+        return
 
     # topup email
     if u.get("step") == "wait_topup_email":
