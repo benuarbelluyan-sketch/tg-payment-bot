@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 from datetime import datetime
+from typing import Any
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -12,27 +13,23 @@ from aiogram.exceptions import TelegramBadRequest
 # =====================
 # CONFIG
 # =====================
-# Лучше хранить токен в Render -> Environment (BOT_TOKEN)
-TOKEN = os.getenv("BOT_TOKEN", "").strip() or "8250387287:AAH3dUCIWgXHJO_fpBACH8PM2fz_9uxqeR8"
+TOKEN = os.getenv("8250387287:AAH3dUCIWgXHJO_fpBACH8PM2fz_9uxqeR8", "").strip()  # обязательно в Render -> Environment
 
 ADMIN_FILE = "admin.json"
+STATE_FILE = "state.json"
+
 ADMIN_USERNAME = "@BenBell97"
 SUPPORT_URL = "https://t.me/BenBell97"
 
 USD_TO_RUB = 77
 
-# Подписки
 SUB_PRICES_USD = {1: 19, 3: 54, 6: 96, 12: 144}
-
-# Пополнение
 TOPUP_AMOUNTS_USD = [5, 10, 20, 50, 100]
 
-# СБП реквизиты
 SBP_BANK = "Тинькофф"
 SBP_TO = "+7 960 234 21 99"
 SBP_RECEIVER = "Беллуян Бенуар"
 
-# Crypto адреса
 CRYPTO_ADDR = {
     "USDT_TRC20": "TGpr8cPDsQPJj3WYkZcEHyknnpXAuPqo68",
     "BTC": "bc1q5xwqegmn9ncyhyz402l56nlyqgdttg2vjmx2sq",
@@ -40,25 +37,37 @@ CRYPTO_ADDR = {
 }
 
 # =====================
-# HELPERS
+# VALIDATION HELPERS
 # =====================
+def is_email(s: str) -> bool:
+    s = (s or "").strip()
+    return ("@" in s) and ("." in s) and (len(s) >= 6)
+
+def is_txid(s: str) -> bool:
+    s = (s or "").strip()
+    return len(s) >= 8 and " " not in s
+
 def usd_to_rub_rounded(usd: int) -> int:
     rub = usd * USD_TO_RUB
     return int(round(rub / 10.0) * 10)
 
-
 SUB_PRICES = {m: {"usd": SUB_PRICES_USD[m], "rub": usd_to_rub_rounded(SUB_PRICES_USD[m])} for m in SUB_PRICES_USD}
 TOPUP_PRICES = {usd: {"usd": usd, "rub": usd_to_rub_rounded(usd)} for usd in TOPUP_AMOUNTS_USD}
-
 
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
 def make_order_id(uid: int) -> str:
     return f"ORD-{uid}-{int(datetime.now().timestamp())}"
 
+def format_user(obj: Message | CallbackQuery) -> str:
+    u = obj.from_user
+    username = f"@{u.username}" if u.username else "(no username)"
+    return f"{username} | id={u.id} | {u.full_name}"
 
+# =====================
+# ADMIN ID STORAGE
+# =====================
 def load_admin_id() -> int | None:
     if not os.path.exists(ADMIN_FILE):
         return None
@@ -70,32 +79,57 @@ def load_admin_id() -> int | None:
     except Exception:
         return None
 
-
 def save_admin_id(admin_id: int):
     with open(ADMIN_FILE, "w", encoding="utf-8") as f:
         json.dump({"admin_id": int(admin_id)}, f, ensure_ascii=False, indent=2)
 
+# =====================
+# STATE STORAGE (IMPORTANT FIX)
+# =====================
+def _safe_load_json(path: str, default: Any):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
 
-def format_user(obj: Message | CallbackQuery) -> str:
-    u = obj.from_user
-    username = f"@{u.username}" if u.username else "(no username)"
-    return f"{username} | id={u.id} | {u.full_name}"
+def save_state():
+    # сохраняем USER в файл, чтобы шаги не слетали
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(USER, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
+def load_state():
+    data = _safe_load_json(STATE_FILE, {})
+    if isinstance(data, dict):
+        # ключи в json строки -> приводим к int
+        out = {}
+        for k, v in data.items():
+            try:
+                out[int(k)] = v
+            except Exception:
+                continue
+        return out
+    return {}
 
 # =====================
-# BOT APP
+# BOT INIT
 # =====================
-if TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE" or not TOKEN or ":" not in TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set. Put your token into BOT_TOKEN env var (Render -> Environment).")
+if not TOKEN or ":" not in TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set. Put token into Render -> Environment (BOT_TOKEN).")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 ADMIN_ID: int | None = load_admin_id()
 
-USER: dict[int, dict] = {}
+# user state & pending approvals
+USER: dict[int, dict] = load_state()
 PENDING: dict[str, dict] = {}
-
 
 def get_user(uid: int) -> dict:
     if uid not in USER:
@@ -110,8 +144,8 @@ def get_user(uid: int) -> dict:
             "order_id": None,
             "email": None,
         }
+        save_state()
     return USER[uid]
-
 
 def reset_flow(u: dict):
     u.update({
@@ -124,7 +158,7 @@ def reset_flow(u: dict):
         "order_id": None,
         "email": None,
     })
-
+    save_state()
 
 async def safe_edit(cb: CallbackQuery, text: str, reply_markup=None):
     try:
@@ -136,7 +170,6 @@ async def safe_edit(cb: CallbackQuery, text: str, reply_markup=None):
         else:
             raise
 
-
 # =====================
 # KEYBOARDS
 # =====================
@@ -146,7 +179,6 @@ def kb_language():
     kb.button(text="🇬🇧 English", callback_data="lang:en")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def kb_main(lang: str):
     kb = InlineKeyboardBuilder()
@@ -163,14 +195,12 @@ def kb_main(lang: str):
     kb.adjust(1)
     return kb.as_markup()
 
-
 def kb_support(lang: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="💬 Написать в поддержку" if lang == "ru" else "💬 Contact support", url=SUPPORT_URL)
     kb.button(text="🏠 В начало" if lang == "ru" else "🏠 Home", callback_data="nav:home")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def kb_admin_decision(order_id: str):
     kb = InlineKeyboardBuilder()
@@ -179,14 +209,12 @@ def kb_admin_decision(order_id: str):
     kb.adjust(2)
     return kb.as_markup()
 
-
 def kb_cancel_payment(lang: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="❌ Отменить" if lang == "ru" else "❌ Cancel", callback_data="nav:cancel")
     kb.button(text="🏠 В начало" if lang == "ru" else "🏠 Home", callback_data="nav:home")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def sub_label(lang: str, months: int) -> str:
     usd = SUB_PRICES[months]["usd"]
@@ -196,7 +224,6 @@ def sub_label(lang: str, months: int) -> str:
         return f"{title} — ${usd} (≈ {rub} ₽)"
     title = "1 month" if months == 1 else ("1 year" if months == 12 else f"{months} months")
     return f"{title} — ${usd} (≈ {rub} RUB)"
-
 
 def kb_sub_months(lang: str):
     kb = InlineKeyboardBuilder()
@@ -209,7 +236,6 @@ def kb_sub_months(lang: str):
     kb.adjust(1)
     return kb.as_markup()
 
-
 def kb_topup_amounts(lang: str):
     kb = InlineKeyboardBuilder()
     for usd in TOPUP_AMOUNTS_USD:
@@ -219,7 +245,6 @@ def kb_topup_amounts(lang: str):
     kb.button(text="🏠 В начало" if lang == "ru" else "🏠 Home", callback_data="nav:home")
     kb.adjust(1)
     return kb.as_markup()
-
 
 def kb_pay_method(lang: str):
     kb = InlineKeyboardBuilder()
@@ -238,7 +263,6 @@ def kb_pay_method(lang: str):
     kb.adjust(1)
     return kb.as_markup()
 
-
 def kb_crypto_coin(lang: str):
     kb = InlineKeyboardBuilder()
     kb.button(text="USDT TRC20", callback_data="coin:USDT_TRC20")
@@ -250,7 +274,6 @@ def kb_crypto_coin(lang: str):
     kb.adjust(1)
     return kb.as_markup()
 
-
 # =====================
 # ADMIN BIND
 # =====================
@@ -261,9 +284,8 @@ async def admin_bind(message: Message):
     save_admin_id(ADMIN_ID)
     await message.answer("✅ Админ привязан. Теперь заявки будут приходить сюда.")
 
-
 # =====================
-# HOME / CANCEL / NAV
+# NAV
 # =====================
 @dp.callback_query(F.data == "nav:home")
 async def nav_home(cb: CallbackQuery):
@@ -272,7 +294,6 @@ async def nav_home(cb: CallbackQuery):
     await safe_edit(cb, "Главное меню" if u["lang"] == "ru" else "Main menu", reply_markup=kb_main(u["lang"]))
     await cb.answer()
 
-
 @dp.callback_query(F.data == "nav:cancel")
 async def nav_cancel(cb: CallbackQuery):
     u = get_user(cb.from_user.id)
@@ -280,7 +301,6 @@ async def nav_cancel(cb: CallbackQuery):
     await safe_edit(cb, "✅ Отменено. Главное меню" if u["lang"] == "ru" else "✅ Cancelled. Main menu",
                     reply_markup=kb_main(u["lang"]))
     await cb.answer()
-
 
 @dp.callback_query(F.data == "nav:back_prev")
 async def back_prev(cb: CallbackQuery):
@@ -296,7 +316,6 @@ async def back_prev(cb: CallbackQuery):
         await safe_edit(cb, "Главное меню" if lang == "ru" else "Main menu", reply_markup=kb_main(lang))
     await cb.answer()
 
-
 @dp.callback_query(F.data == "nav:back_pay")
 async def back_pay(cb: CallbackQuery):
     u = get_user(cb.from_user.id)
@@ -304,14 +323,12 @@ async def back_pay(cb: CallbackQuery):
                     reply_markup=kb_pay_method(u["lang"]))
     await cb.answer()
 
-
 # =====================
 # START / LANGUAGE
 # =====================
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     await message.answer("Выберите язык / Choose language", reply_markup=kb_language())
-
 
 @dp.callback_query(F.data.startswith("lang:"))
 async def lang_handler(cb: CallbackQuery):
@@ -321,7 +338,6 @@ async def lang_handler(cb: CallbackQuery):
     reset_flow(u)
     await safe_edit(cb, "Главное меню" if lang == "ru" else "Main menu", reply_markup=kb_main(lang))
     await cb.answer()
-
 
 # =====================
 # MENU
@@ -335,6 +351,7 @@ async def menu_handler(cb: CallbackQuery):
     if action == "buy_sub":
         reset_flow(u)
         u["flow"] = "sub"
+        save_state()
         await safe_edit(cb, "Выберите вариант подписки" if lang == "ru" else "Choose subscription option",
                         reply_markup=kb_sub_months(lang))
         await cb.answer()
@@ -343,6 +360,7 @@ async def menu_handler(cb: CallbackQuery):
     if action == "topup":
         reset_flow(u)
         u["flow"] = "topup"
+        save_state()
         await safe_edit(cb, "Выберите сумму пополнения" if lang == "ru" else "Choose top up amount",
                         reply_markup=kb_topup_amounts(lang))
         await cb.answer()
@@ -353,7 +371,6 @@ async def menu_handler(cb: CallbackQuery):
                         reply_markup=kb_support(lang))
         await cb.answer()
         return
-
 
 # =====================
 # SUB
@@ -387,6 +404,8 @@ async def sub_handler(cb: CallbackQuery):
     u["flow"] = "sub"
     u["sub_months"] = int(value)
     u["order_id"] = make_order_id(cb.from_user.id)
+    u["step"] = None
+    save_state()
 
     months = u["sub_months"]
     usd = SUB_PRICES[months]["usd"]
@@ -401,7 +420,6 @@ async def sub_handler(cb: CallbackQuery):
     )
     await cb.answer()
 
-
 # =====================
 # TOPUP
 # =====================
@@ -413,7 +431,9 @@ async def topup_amount_handler(cb: CallbackQuery):
     u["flow"] = "topup"
     u["topup_usd"] = int(cb.data.split(":", 1)[1])
     u["order_id"] = make_order_id(cb.from_user.id)
+    u["email"] = None
     u["step"] = "wait_topup_email"
+    save_state()
 
     usd = u["topup_usd"]
     rub = TOPUP_PRICES[usd]["rub"]
@@ -426,7 +446,6 @@ async def topup_amount_handler(cb: CallbackQuery):
         reply_markup=kb_cancel_payment(lang)
     )
     await cb.answer()
-
 
 # =====================
 # PAY METHOD
@@ -449,6 +468,7 @@ async def pay_handler(cb: CallbackQuery):
 
         if method == "sbp":
             u["step"] = "wait_sbp_receipt"
+            save_state()
             await safe_edit(
                 cb,
                 (f"🏦 СБП/перевод\n\n"
@@ -473,6 +493,7 @@ async def pay_handler(cb: CallbackQuery):
 
         if method == "crypto":
             u["step"] = "choose_coin"
+            save_state()
             await safe_edit(
                 cb,
                 (f"Пополнение: ${usd} (≈ {rub} ₽)\nEmail: {u['email']}\n\nВыберите монету:")
@@ -495,6 +516,7 @@ async def pay_handler(cb: CallbackQuery):
 
         if method == "sbp":
             u["step"] = "wait_sbp_receipt"
+            save_state()
             await safe_edit(
                 cb,
                 (f"🏦 СБП/перевод\n\n"
@@ -519,6 +541,7 @@ async def pay_handler(cb: CallbackQuery):
 
         if method == "crypto":
             u["step"] = "choose_coin"
+            save_state()
             await safe_edit(
                 cb,
                 (f"Подписка: {months} мес.\nСумма: {rub} ₽ (≈ ${usd})\n\nВыберите монету:")
@@ -529,8 +552,8 @@ async def pay_handler(cb: CallbackQuery):
             await cb.answer()
             return
 
+    save_state()
     await cb.answer()
-
 
 # =====================
 # COIN
@@ -541,6 +564,7 @@ async def coin_handler(cb: CallbackQuery):
     lang = u["lang"]
     u["coin"] = cb.data.split(":", 1)[1]
     u["step"] = "wait_txid"
+    save_state()
 
     address = CRYPTO_ADDR.get(u["coin"], "ADDRESS_NOT_SET")
 
@@ -561,7 +585,6 @@ async def coin_handler(cb: CallbackQuery):
         reply_markup=kb_cancel_payment(lang)
     )
     await cb.answer()
-
 
 # =====================
 # ADMIN APPROVE / REJECT
@@ -604,45 +627,39 @@ async def admin_decision(cb: CallbackQuery):
         await cb.answer("OK")
         return
 
-
 # =====================
-# USER MESSAGES
+# USER MESSAGES (FIXED)
 # =====================
 @dp.message()
 async def message_handler(message: Message):
     u = get_user(message.from_user.id)
     lang = u["lang"]
+    text = (message.text or "").strip()
 
-    # ✅ TOPUP email (ВОТ ЭТОГО БЛОКА У ТЕБЯ НЕ ХВАТАЛО)
-    if u.get("step") == "wait_topup_email":
-        email = (message.text or "").strip()
-        if "@" not in email or "." not in email:
-            await message.answer("Пришлите корректную почту." if lang == "ru" else "Send a valid email.",
+    # ✅ ЖЕЛЕЗНАЯ ЛОГИКА EMAIL:
+    # если мы в topup и email еще не задан — считаем это email даже если step слетел
+    if (u.get("flow") == "topup" and u.get("topup_usd") and not u.get("email")):
+        if is_email(text):
+            u["email"] = text
+            u["step"] = None
+            save_state()
+
+            usd = u["topup_usd"]
+            rub = TOPUP_PRICES[usd]["rub"]
+            await message.answer(
+                (f"✅ Почта сохранена: {u['email']}\nПополнение: ${usd} (≈ {rub} ₽)\n\nВыберите способ оплаты:")
+                if lang == "ru" else
+                (f"✅ Email saved: {u['email']}\nTop up: ${usd} (≈ {rub} RUB)\n\nChoose payment method:"),
+                reply_markup=kb_pay_method(lang)
+            )
+            return
+        else:
+            await message.answer("Пришлите корректную почту (email)." if lang == "ru" else "Send a valid email.",
                                  reply_markup=kb_cancel_payment(lang))
             return
-
-        u["email"] = email
-        u["step"] = None
-
-        usd = u["topup_usd"]
-        rub = TOPUP_PRICES[usd]["rub"]
-
-        await message.answer(
-            (f"✅ Почта сохранена: {email}\nПополнение: ${usd} (≈ {rub} ₽)\n\nВыберите способ оплаты:")
-            if lang == "ru" else
-            (f"✅ Email saved: {email}\nTop up: ${usd} (≈ {rub} RUB)\n\nChoose payment method:"),
-            reply_markup=kb_pay_method(lang)
-        )
-        return
 
     # txid/hash
-    if u.get("step") == "wait_txid":
-        txid = (message.text or "").strip()
-        if not txid or len(txid) < 8:
-            await message.answer("Пришлите txid/hash одним сообщением." if lang == "ru" else "Send txid/hash in one message.",
-                                 reply_markup=kb_cancel_payment(lang))
-            return
-
+    if u.get("step") == "wait_txid" and is_txid(text):
         if not ADMIN_ID:
             await message.answer("❗ Админ не привязан. Админ должен написать /admin.",
                                  reply_markup=kb_cancel_payment(lang))
@@ -656,7 +673,7 @@ async def message_handler(message: Message):
             usd = SUB_PRICES[months]["usd"]
             rub = SUB_PRICES[months]["rub"]
             PENDING[order_id] = {"kind": "sub", "user_id": message.from_user.id, "months": months}
-            text = (
+            admin_text = (
                 "🟢 PAYMENT (CRYPTO) — SUBSCRIPTION\n"
                 f"Time: {now_str()}\n"
                 f"Order: {order_id}\n"
@@ -664,13 +681,13 @@ async def message_handler(message: Message):
                 f"Subscription: {months} months\n"
                 f"Amount: {rub} RUB (≈ ${usd})\n"
                 f"Coin: {u.get('coin')}\n"
-                f"TXID: {txid}\n"
+                f"TXID: {text}\n"
             )
         else:
             usd = u["topup_usd"]
             rub = TOPUP_PRICES[usd]["rub"]
             PENDING[order_id] = {"kind": "topup", "user_id": message.from_user.id, "usd": usd, "email": u.get("email")}
-            text = (
+            admin_text = (
                 "🟢 PAYMENT (CRYPTO) — TOPUP\n"
                 f"Time: {now_str()}\n"
                 f"Order: {order_id}\n"
@@ -678,12 +695,18 @@ async def message_handler(message: Message):
                 f"Email: {u.get('email')}\n"
                 f"Topup: ${usd} (≈ {rub} RUB)\n"
                 f"Coin: {u.get('coin')}\n"
-                f"TXID: {txid}\n"
+                f"TXID: {text}\n"
             )
 
-        await bot.send_message(ADMIN_ID, text, reply_markup=kb_admin_decision(order_id))
+        await bot.send_message(ADMIN_ID, admin_text, reply_markup=kb_admin_decision(order_id))
         u["step"] = None
+        save_state()
         await message.answer("✅ Данные получены. Ожидайте подтверждения.", reply_markup=kb_main(lang))
+        return
+
+    if u.get("step") == "wait_txid":
+        await message.answer("Пришлите txid/hash одним сообщением." if lang == "ru" else "Send txid/hash in one message.",
+                             reply_markup=kb_cancel_payment(lang))
         return
 
     # SBP receipt
@@ -726,6 +749,7 @@ async def message_handler(message: Message):
             file_id = message.photo[-1].file_id
             await bot.send_photo(ADMIN_ID, file_id, caption=caption, reply_markup=kb_admin_decision(order_id))
             u["step"] = None
+            save_state()
             await message.answer("✅ Чек получен. Ожидайте подтверждения.", reply_markup=kb_main(lang))
             return
 
@@ -733,6 +757,7 @@ async def message_handler(message: Message):
             file_id = message.document.file_id
             await bot.send_document(ADMIN_ID, file_id, caption=caption, reply_markup=kb_admin_decision(order_id))
             u["step"] = None
+            save_state()
             await message.answer("✅ Чек получен. Ожидайте подтверждения.", reply_markup=kb_main(lang))
             return
 
@@ -741,14 +766,11 @@ async def message_handler(message: Message):
                              reply_markup=kb_cancel_payment(lang))
         return
 
-    # fallback
     await message.answer("Откройте меню ниже 👇" if lang == "ru" else "Open the menu below 👇", reply_markup=kb_main(lang))
-
 
 async def main():
     print("✅ Bot started. Waiting for messages...")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
