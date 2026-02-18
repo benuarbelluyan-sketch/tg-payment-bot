@@ -13,7 +13,12 @@ from aiogram.exceptions import TelegramBadRequest
 # =====================
 # CONFIG
 # =====================
-TOKEN = os.getenv("BOT_TOKEN", "").strip()  # обязательно в Render -> Environment
+# ✅ Токен храните в Render -> Environment: BOT_TOKEN
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+# ✅ Рекомендовано: зафиксировать админа в Render -> Environment: ADMIN_ID (числом)
+# Если ADMIN_ID не задан — можно привязать командой /admin, но после перезапуска Render может "забыть".
+ADMIN_ID_ENV = os.getenv("ADMIN_ID", "").strip()
 
 ADMIN_FILE = "admin.json"
 STATE_FILE = "state.json"
@@ -21,15 +26,26 @@ STATE_FILE = "state.json"
 ADMIN_USERNAME = "@BenBell97"
 SUPPORT_URL = "https://t.me/BenBell97"
 
+# Часы работы (МСК)
+WORK_HOURS_TEXT_RU = "🕒 Работаем: 10:30–01:00 (МСК)"
+WORK_HOURS_TEXT_EN = "🕒 Working hours: 10:30–01:00 (MSK)"
+AFTER_HOURS_NOTE_RU = "⚠️ Если оплата отправлена вне 10:30–01:00 (МСК), платёж будет обработан на следующий день."
+AFTER_HOURS_NOTE_EN = "⚠️ If payment is sent outside 10:30–01:00 (MSK), it will be processed the next day."
+
 USD_TO_RUB = 77
 
+# Подписки
 SUB_PRICES_USD = {1: 19, 3: 54, 6: 96, 12: 144}
+
+# Пополнение
 TOPUP_AMOUNTS_USD = [5, 10, 20, 50, 100]
 
+# СБП реквизиты
 SBP_BANK = "Тинькофф"
 SBP_TO = "+7 960 234 21 99"
 SBP_RECEIVER = "Беллуян Бенуар"
 
+# Crypto адреса
 CRYPTO_ADDR = {
     "USDT_TRC20": "TGpr8cPDsQPJj3WYkZcEHyknnpXAuPqo68",
     "BTC": "bc1q5xwqegmn9ncyhyz402l56nlyqgdttg2vjmx2sq",
@@ -69,6 +85,11 @@ def format_user(obj: Message | CallbackQuery) -> str:
 # ADMIN ID STORAGE
 # =====================
 def load_admin_id() -> int | None:
+    # 1) ENV (самый надёжный)
+    if ADMIN_ID_ENV.isdigit():
+        return int(ADMIN_ID_ENV)
+
+    # 2) Файл (может слетать после перезапуска Render)
     if not os.path.exists(ADMIN_FILE):
         return None
     try:
@@ -80,11 +101,17 @@ def load_admin_id() -> int | None:
         return None
 
 def save_admin_id(admin_id: int):
-    with open(ADMIN_FILE, "w", encoding="utf-8") as f:
-        json.dump({"admin_id": int(admin_id)}, f, ensure_ascii=False, indent=2)
+    # если админ задан через ENV — файл не нужен
+    if ADMIN_ID_ENV.isdigit():
+        return
+    try:
+        with open(ADMIN_FILE, "w", encoding="utf-8") as f:
+            json.dump({"admin_id": int(admin_id)}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 # =====================
-# STATE STORAGE (IMPORTANT FIX)
+# STATE STORAGE
 # =====================
 def _safe_load_json(path: str, default: Any):
     if not os.path.exists(path):
@@ -96,7 +123,6 @@ def _safe_load_json(path: str, default: Any):
         return default
 
 def save_state():
-    # сохраняем USER в файл, чтобы шаги не слетали
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(USER, f, ensure_ascii=False, indent=2)
@@ -106,7 +132,6 @@ def save_state():
 def load_state():
     data = _safe_load_json(STATE_FILE, {})
     if isinstance(data, dict):
-        # ключи в json строки -> приводим к int
         out = {}
         for k, v in data.items():
             try:
@@ -127,7 +152,6 @@ dp = Dispatcher()
 
 ADMIN_ID: int | None = load_admin_id()
 
-# user state & pending approvals
 USER: dict[int, dict] = load_state()
 PENDING: dict[str, dict] = {}
 
@@ -274,12 +298,32 @@ def kb_crypto_coin(lang: str):
     kb.adjust(1)
     return kb.as_markup()
 
+def main_menu_text(lang: str) -> str:
+    if lang == "ru":
+        return f"Главное меню\n\n{WORK_HOURS_TEXT_RU}"
+    return f"Main menu\n\n{WORK_HOURS_TEXT_EN}"
+
 # =====================
-# ADMIN BIND
+# COMMANDS (Start + Support)
 # =====================
+@dp.message(Command("support"))
+async def cmd_support(message: Message):
+    u = get_user(message.from_user.id)
+    await message.answer(f"Поддержка: {ADMIN_USERNAME}\n{WORK_HOURS_TEXT_RU}" if u["lang"] == "ru"
+                         else f"Support: {ADMIN_USERNAME}\n{WORK_HOURS_TEXT_EN}",
+                         reply_markup=kb_support(u["lang"]))
+
+@dp.message(Command("start"))
+async def start_handler(message: Message):
+    await message.answer("Выберите язык / Choose language", reply_markup=kb_language())
+
+# /admin по-прежнему есть (если ADMIN_ID не задан в ENV)
 @dp.message(Command("admin"))
 async def admin_bind(message: Message):
     global ADMIN_ID
+    if ADMIN_ID_ENV.isdigit():
+        await message.answer("✅ ADMIN_ID задан через Environment. Привязка /admin не требуется.")
+        return
     ADMIN_ID = message.from_user.id
     save_admin_id(ADMIN_ID)
     await message.answer("✅ Админ привязан. Теперь заявки будут приходить сюда.")
@@ -291,14 +335,15 @@ async def admin_bind(message: Message):
 async def nav_home(cb: CallbackQuery):
     u = get_user(cb.from_user.id)
     reset_flow(u)
-    await safe_edit(cb, "Главное меню" if u["lang"] == "ru" else "Main menu", reply_markup=kb_main(u["lang"]))
+    await safe_edit(cb, main_menu_text(u["lang"]), reply_markup=kb_main(u["lang"]))
     await cb.answer()
 
 @dp.callback_query(F.data == "nav:cancel")
 async def nav_cancel(cb: CallbackQuery):
     u = get_user(cb.from_user.id)
     reset_flow(u)
-    await safe_edit(cb, "✅ Отменено. Главное меню" if u["lang"] == "ru" else "✅ Cancelled. Main menu",
+    await safe_edit(cb, "✅ Отменено.\n\n" + main_menu_text(u["lang"]) if u["lang"] == "ru"
+                    else "✅ Cancelled.\n\n" + main_menu_text(u["lang"]),
                     reply_markup=kb_main(u["lang"]))
     await cb.answer()
 
@@ -313,7 +358,7 @@ async def back_prev(cb: CallbackQuery):
         await safe_edit(cb, "Выберите сумму пополнения" if lang == "ru" else "Choose top up amount",
                         reply_markup=kb_topup_amounts(lang))
     else:
-        await safe_edit(cb, "Главное меню" if lang == "ru" else "Main menu", reply_markup=kb_main(lang))
+        await safe_edit(cb, main_menu_text(lang), reply_markup=kb_main(lang))
     await cb.answer()
 
 @dp.callback_query(F.data == "nav:back_pay")
@@ -324,19 +369,15 @@ async def back_pay(cb: CallbackQuery):
     await cb.answer()
 
 # =====================
-# START / LANGUAGE
+# LANGUAGE
 # =====================
-@dp.message(Command("start"))
-async def start_handler(message: Message):
-    await message.answer("Выберите язык / Choose language", reply_markup=kb_language())
-
 @dp.callback_query(F.data.startswith("lang:"))
 async def lang_handler(cb: CallbackQuery):
     lang = cb.data.split(":", 1)[1]
     u = get_user(cb.from_user.id)
     u["lang"] = lang
     reset_flow(u)
-    await safe_edit(cb, "Главное меню" if lang == "ru" else "Main menu", reply_markup=kb_main(lang))
+    await safe_edit(cb, main_menu_text(lang), reply_markup=kb_main(lang))
     await cb.answer()
 
 # =====================
@@ -367,7 +408,8 @@ async def menu_handler(cb: CallbackQuery):
         return
 
     if action == "support":
-        await safe_edit(cb, f"Поддержка: {ADMIN_USERNAME}" if lang == "ru" else f"Support: {ADMIN_USERNAME}",
+        await safe_edit(cb, (f"Поддержка: {ADMIN_USERNAME}\n{WORK_HOURS_TEXT_RU}" if lang == "ru"
+                            else f"Support: {ADMIN_USERNAME}\n{WORK_HOURS_TEXT_EN}"),
                         reply_markup=kb_support(lang))
         await cb.answer()
         return
@@ -383,7 +425,8 @@ async def sub_handler(cb: CallbackQuery):
 
     if value == "custom":
         if not ADMIN_ID:
-            await safe_edit(cb, "❗ Админ не привязан. Напишите /admin с аккаунта администратора.",
+            await safe_edit(cb, "❗ Админ не привязан. Админ должен написать /admin." if lang == "ru"
+                            else "❗ Admin is not set. Admin must send /admin.",
                             reply_markup=kb_cancel_payment(lang))
             await cb.answer()
             return
@@ -628,16 +671,20 @@ async def admin_decision(cb: CallbackQuery):
         return
 
 # =====================
-# USER MESSAGES (FIXED)
+# USER MESSAGES
 # =====================
 @dp.message()
 async def message_handler(message: Message):
+    global ADMIN_ID
+    # обновим ADMIN_ID из ENV, если вдруг добавили после деплоя
+    if ADMIN_ID is None and ADMIN_ID_ENV.isdigit():
+        ADMIN_ID = int(ADMIN_ID_ENV)
+
     u = get_user(message.from_user.id)
     lang = u["lang"]
     text = (message.text or "").strip()
 
-    # ✅ ЖЕЛЕЗНАЯ ЛОГИКА EMAIL:
-    # если мы в topup и email еще не задан — считаем это email даже если step слетел
+    # TOPUP email (даже если step слетел)
     if (u.get("flow") == "topup" and u.get("topup_usd") and not u.get("email")):
         if is_email(text):
             u["email"] = text
@@ -661,7 +708,8 @@ async def message_handler(message: Message):
     # txid/hash
     if u.get("step") == "wait_txid" and is_txid(text):
         if not ADMIN_ID:
-            await message.answer("❗ Админ не привязан. Админ должен написать /admin.",
+            await message.answer("❗ Админ не привязан. Админ должен написать /admin." if lang == "ru"
+                                 else "❗ Admin is not set. Admin must send /admin.",
                                  reply_markup=kb_cancel_payment(lang))
             return
 
@@ -701,7 +749,10 @@ async def message_handler(message: Message):
         await bot.send_message(ADMIN_ID, admin_text, reply_markup=kb_admin_decision(order_id))
         u["step"] = None
         save_state()
-        await message.answer("✅ Данные получены. Ожидайте подтверждения.", reply_markup=kb_main(lang))
+
+        note = AFTER_HOURS_NOTE_RU if lang == "ru" else AFTER_HOURS_NOTE_EN
+        await message.answer(f"✅ Данные получены. Ожидайте подтверждения.\n\n{note}",
+                             reply_markup=kb_main(lang))
         return
 
     if u.get("step") == "wait_txid":
@@ -712,7 +763,8 @@ async def message_handler(message: Message):
     # SBP receipt
     if u.get("step") == "wait_sbp_receipt":
         if not ADMIN_ID:
-            await message.answer("❗ Админ не привязан. Админ должен написать /admin.",
+            await message.answer("❗ Админ не привязан. Админ должен написать /admin." if lang == "ru"
+                                 else "❗ Admin is not set. Admin must send /admin.",
                                  reply_markup=kb_cancel_payment(lang))
             return
 
@@ -745,20 +797,22 @@ async def message_handler(message: Message):
                 f"Topup: ${usd} (≈ {rub} RUB)\n"
             )
 
+        sent = False
         if message.photo:
             file_id = message.photo[-1].file_id
             await bot.send_photo(ADMIN_ID, file_id, caption=caption, reply_markup=kb_admin_decision(order_id))
-            u["step"] = None
-            save_state()
-            await message.answer("✅ Чек получен. Ожидайте подтверждения.", reply_markup=kb_main(lang))
-            return
-
-        if message.document:
+            sent = True
+        elif message.document:
             file_id = message.document.file_id
             await bot.send_document(ADMIN_ID, file_id, caption=caption, reply_markup=kb_admin_decision(order_id))
+            sent = True
+
+        if sent:
             u["step"] = None
             save_state()
-            await message.answer("✅ Чек получен. Ожидайте подтверждения.", reply_markup=kb_main(lang))
+            note = AFTER_HOURS_NOTE_RU if lang == "ru" else AFTER_HOURS_NOTE_EN
+            await message.answer(f"✅ Чек получен. Ожидайте подтверждения.\n\n{note}",
+                                 reply_markup=kb_main(lang))
             return
 
         await message.answer("Пришлите чек как ФОТО или ФАЙЛ (document)." if lang == "ru"
@@ -766,7 +820,9 @@ async def message_handler(message: Message):
                              reply_markup=kb_cancel_payment(lang))
         return
 
-    await message.answer("Откройте меню ниже 👇" if lang == "ru" else "Open the menu below 👇", reply_markup=kb_main(lang))
+    await message.answer(("Откройте меню ниже 👇\n" + WORK_HOURS_TEXT_RU) if lang == "ru"
+                         else ("Open the menu below 👇\n" + WORK_HOURS_TEXT_EN),
+                         reply_markup=kb_main(lang))
 
 async def main():
     print("✅ Bot started. Waiting for messages...")
