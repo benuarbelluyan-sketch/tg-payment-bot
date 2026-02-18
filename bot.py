@@ -13,7 +13,7 @@ from aiogram.exceptions import TelegramBadRequest
 # =====================
 # CONFIG
 # =====================
-TOKEN = os.getenv("8250387287:AAH3dUCIWgXHJO_fpBACH8PM2fz_9uxqeR8", "").strip()  # обязательно в Render -> Environment
+TOKEN = os.getenv("BOT_TOKEN", "").strip()  # обязательно в Render -> Environment
 
 ADMIN_FILE = "admin.json"
 STATE_FILE = "state.json"
