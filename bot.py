@@ -7,12 +7,12 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest
 
 # =====================
 # CONFIG
 # =====================
-# ⚠️ Не храните токен в открытом виде. Вставьте сюда свой токен после /revoke в BotFather.
+# Лучше хранить токен в Render -> Environment (BOT_TOKEN)
 TOKEN = os.getenv("BOT_TOKEN", "").strip() or "8250387287:AAH3dUCIWgXHJO_fpBACH8PM2fz_9uxqeR8"
 
 ADMIN_FILE = "admin.json"
@@ -21,7 +21,7 @@ SUPPORT_URL = "https://t.me/BenBell97"
 
 USD_TO_RUB = 77
 
-# Подписки (как на скрине)
+# Подписки
 SUB_PRICES_USD = {1: 19, 3: 54, 6: 96, 12: 144}
 
 # Пополнение
@@ -86,7 +86,7 @@ def format_user(obj: Message | CallbackQuery) -> str:
 # BOT APP
 # =====================
 if TOKEN == "PASTE_YOUR_BOT_TOKEN_HERE" or not TOKEN or ":" not in TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set. Put your token into BOT_TOKEN env var or TOKEN constant.")
+    raise RuntimeError("BOT_TOKEN is not set. Put your token into BOT_TOKEN env var (Render -> Environment).")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -101,15 +101,14 @@ def get_user(uid: int) -> dict:
     if uid not in USER:
         USER[uid] = {
             "lang": "ru",
-            "flow": None,          # sub / topup / status
-            "step": None,          # wait_topup_email / wait_txid / wait_sbp_receipt / wait_status_creds / choose_coin
+            "flow": None,          # sub / topup
+            "step": None,          # wait_topup_email / wait_txid / wait_sbp_receipt / choose_coin
             "sub_months": None,
             "topup_usd": None,
             "pay_method": None,    # sbp / crypto
             "coin": None,
             "order_id": None,
             "email": None,
-            "license_key": None,
         }
     return USER[uid]
 
@@ -124,21 +123,15 @@ def reset_flow(u: dict):
         "coin": None,
         "order_id": None,
         "email": None,
-        "license_key": None,
     })
 
 
 async def safe_edit(cb: CallbackQuery, text: str, reply_markup=None):
-    """
-    Защита от ошибки:
-    Bad Request: message is not modified
-    """
     try:
         if cb.message:
             await cb.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as e:
         if "message is not modified" in str(e).lower():
-            # просто игнорируем
             pass
         else:
             raise
@@ -212,7 +205,6 @@ def kb_sub_months(lang: str):
     kb.button(text=sub_label(lang, 6), callback_data="sub:6")
     kb.button(text=sub_label(lang, 12), callback_data="sub:12")
     kb.button(text="⚡ Custom", callback_data="sub:custom")
-    kb.button(text="⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="nav:home")
     kb.button(text="🏠 В начало" if lang == "ru" else "🏠 Home", callback_data="nav:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -224,7 +216,6 @@ def kb_topup_amounts(lang: str):
         rub = TOPUP_PRICES[usd]["rub"]
         text = f"${usd} (≈ {rub} ₽)" if lang == "ru" else f"${usd} (≈ {rub} RUB)"
         kb.button(text=text, callback_data=f"topup:{usd}")
-    kb.button(text="⬅️ Назад" if lang == "ru" else "⬅️ Back", callback_data="nav:home")
     kb.button(text="🏠 В начало" if lang == "ru" else "🏠 Home", callback_data="nav:home")
     kb.adjust(1)
     return kb.as_markup()
@@ -621,7 +612,29 @@ async def admin_decision(cb: CallbackQuery):
 async def message_handler(message: Message):
     u = get_user(message.from_user.id)
     lang = u["lang"]
-    
+
+    # ✅ TOPUP email (ВОТ ЭТОГО БЛОКА У ТЕБЯ НЕ ХВАТАЛО)
+    if u.get("step") == "wait_topup_email":
+        email = (message.text or "").strip()
+        if "@" not in email or "." not in email:
+            await message.answer("Пришлите корректную почту." if lang == "ru" else "Send a valid email.",
+                                 reply_markup=kb_cancel_payment(lang))
+            return
+
+        u["email"] = email
+        u["step"] = None
+
+        usd = u["topup_usd"]
+        rub = TOPUP_PRICES[usd]["rub"]
+
+        await message.answer(
+            (f"✅ Почта сохранена: {email}\nПополнение: ${usd} (≈ {rub} ₽)\n\nВыберите способ оплаты:")
+            if lang == "ru" else
+            (f"✅ Email saved: {email}\nTop up: ${usd} (≈ {rub} RUB)\n\nChoose payment method:"),
+            reply_markup=kb_pay_method(lang)
+        )
+        return
+
     # txid/hash
     if u.get("step") == "wait_txid":
         txid = (message.text or "").strip()
