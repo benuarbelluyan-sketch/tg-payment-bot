@@ -32,10 +32,12 @@ WORK_HOURS_TEXT_EN = "🕒 Working hours: 10:30–01:00 (MSK)"
 AFTER_HOURS_NOTE_RU = "⚠️ Если оплата отправлена вне 10:30–01:00 (МСК), платёж будет обработан на следующий день."
 AFTER_HOURS_NOTE_EN = "⚠️ If payment is sent outside 10:30–01:00 (MSK), it will be processed the next day."
 
-USD_TO_RUB = 77
+USD_TO_RUB = 90
 
-# Подписки
-SUB_PRICES_USD = {1: 19, 3: 54, 6: 96, 12: 144}
+# Подписки (USD) + оригинальная цена для отображения скидки
+SUB_PRICES_USD     = {1: 29,  3: 78,  6: 139, 12: 209}
+SUB_PRICES_ORIG    = {1: 29,  3: 87,  6: 174, 12: 348}   # цены без скидки
+SUB_DISCOUNTS      = {1: 0,   3: 10,  6: 20,  12: 40}    # % скидки
 
 # Пополнение
 TOPUP_AMOUNTS_USD = [5, 10, 20, 50, 100]
@@ -67,7 +69,16 @@ def usd_to_rub_rounded(usd: int) -> int:
     rub = usd * USD_TO_RUB
     return int(round(rub / 10.0) * 10)
 
-SUB_PRICES = {m: {"usd": SUB_PRICES_USD[m], "rub": usd_to_rub_rounded(SUB_PRICES_USD[m])} for m in SUB_PRICES_USD}
+SUB_PRICES = {
+    m: {
+        "usd":      SUB_PRICES_USD[m],
+        "rub":      usd_to_rub_rounded(SUB_PRICES_USD[m]),
+        "usd_orig": SUB_PRICES_ORIG[m],
+        "rub_orig": usd_to_rub_rounded(SUB_PRICES_ORIG[m]),
+        "discount": SUB_DISCOUNTS[m],
+    }
+    for m in SUB_PRICES_USD
+}
 TOPUP_PRICES = {usd: {"usd": usd, "rub": usd_to_rub_rounded(usd)} for usd in TOPUP_AMOUNTS_USD}
 
 def now_str() -> str:
@@ -241,13 +252,16 @@ def kb_cancel_payment(lang: str):
     return kb.as_markup()
 
 def sub_label(lang: str, months: int) -> str:
-    usd = SUB_PRICES[months]["usd"]
-    rub = SUB_PRICES[months]["rub"]
+    usd      = SUB_PRICES[months]["usd"]
+    rub      = SUB_PRICES[months]["rub"]
+    discount = SUB_PRICES[months]["discount"]
     if lang == "ru":
-        title = "1 месяц" if months == 1 else ("Годовая" if months == 12 else f"{months} месяца")
-        return f"{title} — ${usd} (≈ {rub} ₽)"
+        title = "1 месяц" if months == 1 else ("Год" if months == 12 else f"{months} месяца")
+        disc  = f" 🔥 −{discount}%" if discount > 0 else ""
+        return f"{title}{disc} — {rub} ₽ (${usd})"
     title = "1 month" if months == 1 else ("1 year" if months == 12 else f"{months} months")
-    return f"{title} — ${usd} (≈ {rub} RUB)"
+    disc  = f" 🔥 −{discount}%" if discount > 0 else ""
+    return f"{title}{disc} — ${usd} ({rub} RUB)"
 
 def kb_sub_months(lang: str):
     kb = InlineKeyboardBuilder()
@@ -264,7 +278,7 @@ def kb_topup_amounts(lang: str):
     kb = InlineKeyboardBuilder()
     for usd in TOPUP_AMOUNTS_USD:
         rub = TOPUP_PRICES[usd]["rub"]
-        text = f"${usd} (≈ {rub} ₽)" if lang == "ru" else f"${usd} (≈ {rub} RUB)"
+        text = f"${usd} | {rub} ₽" if lang == "ru" else f"${usd} | {rub} RUB"
         kb.button(text=text, callback_data=f"topup:{usd}")
     kb.button(text="🏠 В начало" if lang == "ru" else "🏠 Home", callback_data="nav:home")
     kb.adjust(1)
@@ -451,14 +465,19 @@ async def sub_handler(cb: CallbackQuery):
     save_state()
 
     months = u["sub_months"]
-    usd = SUB_PRICES[months]["usd"]
-    rub = SUB_PRICES[months]["rub"]
+    usd      = SUB_PRICES[months]["usd"]
+    rub      = SUB_PRICES[months]["rub"]
+    discount = SUB_PRICES[months]["discount"]
+    disc_txt = f" (скидка {discount}%)" if discount > 0 else ""
+    disc_en  = f" ({discount}% off)"    if discount > 0 else ""
 
     await safe_edit(
         cb,
-        (f"Подписка: {months} мес.\nСумма: {rub} ₽ (≈ ${usd})\n\nВыберите способ оплаты"
+        (f"💳 Подписка: {months} мес.{disc_txt}\n"
+         f"Сумма: {rub} ₽  |  ${usd}\n\nВыберите способ оплаты:"
          if lang == "ru" else
-         f"Subscription: {months} mo.\nAmount: {rub} RUB (≈ ${usd})\n\nChoose payment method"),
+         f"💳 Subscription: {months} mo.{disc_en}\n"
+         f"Amount: ${usd}  |  {rub} RUB\n\nChoose payment method:"),
         reply_markup=kb_pay_method(lang)
     )
     await cb.answer()
@@ -483,9 +502,9 @@ async def topup_amount_handler(cb: CallbackQuery):
 
     await safe_edit(
         cb,
-        (f"Пополнение: ${usd} (≈ {rub} ₽)\n\nТеперь отправьте почту от аккаунта одним сообщением.")
+        (f"Пополнение: ${usd} | {rub} ₽\n\nТеперь отправьте почту от аккаунта одним сообщением.")
         if lang == "ru" else
-        (f"Top up: ${usd} (≈ {rub} RUB)\n\nNow send your account email in one message."),
+        (f"Top up: ${usd} | {rub} RUB\n\nNow send your account email in one message."),
         reply_markup=kb_cancel_payment(lang)
     )
     await cb.answer()
@@ -515,7 +534,7 @@ async def pay_handler(cb: CallbackQuery):
             await safe_edit(
                 cb,
                 (f"🏦 СБП/перевод\n\n"
-                 f"Пополнение: ${usd} (≈ {rub} ₽)\n"
+                 f"Пополнение: ${usd} | {rub} ₽\n"
                  f"Email: {u['email']}\n\n"
                  f"Банк: {SBP_BANK}\n"
                  f"Получатель: {SBP_RECEIVER}\n"
@@ -523,7 +542,7 @@ async def pay_handler(cb: CallbackQuery):
                  f"После оплаты пришлите сюда ЧЕК/СКРИН (как фото или файл).")
                 if lang == "ru" else
                 (f"🏦 SBP transfer\n\n"
-                 f"Top up: ${usd} (≈ {rub} RUB)\n"
+                 f"Top up: ${usd} | {rub} RUB\n"
                  f"Email: {u['email']}\n\n"
                  f"Bank: {SBP_BANK}\n"
                  f"Receiver: {SBP_RECEIVER}\n"
@@ -539,9 +558,9 @@ async def pay_handler(cb: CallbackQuery):
             save_state()
             await safe_edit(
                 cb,
-                (f"Пополнение: ${usd} (≈ {rub} ₽)\nEmail: {u['email']}\n\nВыберите монету:")
+                (f"Пополнение: ${usd} | {rub} ₽\nEmail: {u['email']}\n\nВыберите монету:")
                 if lang == "ru" else
-                (f"Top up: ${usd} (≈ {rub} RUB)\nEmail: {u['email']}\n\nChoose coin:"),
+                (f"Top up: ${usd} | {rub} RUB\nEmail: {u['email']}\n\nChoose coin:"),
                 reply_markup=kb_crypto_coin(lang)
             )
             await cb.answer()
@@ -564,7 +583,7 @@ async def pay_handler(cb: CallbackQuery):
                 cb,
                 (f"🏦 СБП/перевод\n\n"
                  f"Подписка: {months} мес.\n"
-                 f"Сумма: {rub} ₽ (≈ ${usd})\n\n"
+                 f"Сумма: {rub} ₽  |  ${usd}\n\n"
                  f"Банк: {SBP_BANK}\n"
                  f"Получатель: {SBP_RECEIVER}\n"
                  f"Номер/телефон: {SBP_TO}\n\n"
@@ -572,7 +591,7 @@ async def pay_handler(cb: CallbackQuery):
                 if lang == "ru" else
                 (f"🏦 SBP transfer\n\n"
                  f"Subscription: {months} mo.\n"
-                 f"Amount: {rub} RUB (≈ ${usd})\n\n"
+                 f"Amount: ${usd}  |  {rub} RUB\n\n"
                  f"Bank: {SBP_BANK}\n"
                  f"Receiver: {SBP_RECEIVER}\n"
                  f"Phone/card: {SBP_TO}\n\n"
@@ -587,9 +606,9 @@ async def pay_handler(cb: CallbackQuery):
             save_state()
             await safe_edit(
                 cb,
-                (f"Подписка: {months} мес.\nСумма: {rub} ₽ (≈ ${usd})\n\nВыберите монету:")
+                (f"Подписка: {months} мес.\nСумма: {rub} ₽  |  ${usd}\n\nВыберите монету:")
                 if lang == "ru" else
-                (f"Subscription: {months} mo.\nAmount: {rub} RUB (≈ ${usd})\n\nChoose coin:"),
+                (f"Subscription: {months} mo.\nAmount: ${usd}  |  {rub} RUB\n\nChoose coin:"),
                 reply_markup=kb_crypto_coin(lang)
             )
             await cb.answer()
@@ -615,11 +634,11 @@ async def coin_handler(cb: CallbackQuery):
         months = u["sub_months"]
         usd = SUB_PRICES[months]["usd"]
         rub = SUB_PRICES[months]["rub"]
-        head = f"Подписка: {months} мес.\nСумма: {rub} ₽ (≈ ${usd})\nМонета: {u['coin']}"
+        head = f"Подписка: {months} мес.\nСумма: {rub} ₽  |  ${usd}\nМонета: {u['coin']}"
     else:
         usd = u["topup_usd"]
         rub = TOPUP_PRICES[usd]["rub"]
-        head = f"Пополнение: ${usd} (≈ {rub} ₽)\nEmail: {u.get('email')}\nМонета: {u['coin']}"
+        head = f"Пополнение: ${usd}  |  {rub} ₽\nEmail: {u.get('email')}\nМонета: {u['coin']}"
 
     await safe_edit(
         cb,
@@ -694,9 +713,9 @@ async def message_handler(message: Message):
             usd = u["topup_usd"]
             rub = TOPUP_PRICES[usd]["rub"]
             await message.answer(
-                (f"✅ Почта сохранена: {u['email']}\nПополнение: ${usd} (≈ {rub} ₽)\n\nВыберите способ оплаты:")
+                (f"✅ Почта сохранена: {u['email']}\nПополнение: ${usd}  |  {rub} ₽\n\nВыберите способ оплаты:")
                 if lang == "ru" else
-                (f"✅ Email saved: {u['email']}\nTop up: ${usd} (≈ {rub} RUB)\n\nChoose payment method:"),
+                (f"✅ Email saved: {u['email']}\nTop up: ${usd}  |  {rub} RUB\n\nChoose payment method:"),
                 reply_markup=kb_pay_method(lang)
             )
             return
@@ -727,7 +746,7 @@ async def message_handler(message: Message):
                 f"Order: {order_id}\n"
                 f"User: {format_user(message)}\n"
                 f"Subscription: {months} months\n"
-                f"Amount: {rub} RUB (≈ ${usd})\n"
+                f"Amount: ${usd} | {rub} RUB\n"
                 f"Coin: {u.get('coin')}\n"
                 f"TXID: {text}\n"
             )
@@ -741,7 +760,7 @@ async def message_handler(message: Message):
                 f"Order: {order_id}\n"
                 f"User: {format_user(message)}\n"
                 f"Email: {u.get('email')}\n"
-                f"Topup: ${usd} (≈ {rub} RUB)\n"
+                f"Topup: ${usd} | {rub} RUB\n"
                 f"Coin: {u.get('coin')}\n"
                 f"TXID: {text}\n"
             )
@@ -782,7 +801,7 @@ async def message_handler(message: Message):
                 f"Order: {order_id}\n"
                 f"User: {format_user(message)}\n"
                 f"Subscription: {months} months\n"
-                f"Amount: {rub} RUB (≈ ${usd})\n"
+                f"Amount: ${usd} | {rub} RUB\n"
             )
         else:
             usd = u["topup_usd"]
@@ -794,7 +813,7 @@ async def message_handler(message: Message):
                 f"Order: {order_id}\n"
                 f"User: {format_user(message)}\n"
                 f"Email: {u.get('email')}\n"
-                f"Topup: ${usd} (≈ {rub} RUB)\n"
+                f"Topup: ${usd} | {rub} RUB\n"
             )
 
         sent = False
