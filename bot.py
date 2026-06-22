@@ -329,7 +329,13 @@ async def cmd_support(message: Message):
 
 @dp.message(Command("start"))
 async def start_handler(message: Message):
-    await message.answer("Выберите язык / Choose language", reply_markup=kb_language())
+    await message.answer(
+        "🖥️ <b>ПОКА ДОСТУПНО ТОЛЬКО ДЛЯ WINDOWS</b>\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "Выберите язык / Choose language",
+        reply_markup=kb_language(),
+        parse_mode="HTML"
+    )
 
 # /admin по-прежнему есть (если ADMIN_ID не задан в ENV)
 @dp.message(Command("admin"))
